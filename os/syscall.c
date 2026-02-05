@@ -36,6 +36,55 @@ uint64 sys_gettimeofday(TimeVal *val, int _tz)
 	return 0;
 }
 
+static inline uint64 cycles_to_ms(uint64 cycles)
+{
+	return (cycles * 1000) / CPU_FREQ;
+}
+
+uint64 sys_getpid()
+{
+	return curr_proc()->pid;
+}
+
+uint64 sys_task_info(TaskInfo *ti)
+{
+	if (ti == 0)
+		return -1;
+	struct proc *p = curr_proc();
+	TaskInfo info;
+	switch (p->state) {
+	case UNUSED:
+		info.status = UnInit;
+		break;
+	case RUNNABLE:
+	case USED:
+	case SLEEPING:
+		info.status = Ready;
+		break;
+	case RUNNING:
+		info.status = Running;
+		break;
+	case ZOMBIE:
+		info.status = Exited;
+		break;
+	default:
+		info.status = UnInit;
+		break;
+	}
+	memmove(info.syscall_times, p->syscall_times,
+		sizeof(info.syscall_times));
+	if (p->start_cycle == 0) {
+		info.time = 0;
+	} else {
+		uint64 now = get_cycle();
+		uint64 total_cycles =
+			(now > p->start_cycle) ? (now - p->start_cycle) : 0;
+		info.time = (int)cycles_to_ms(total_cycles);
+	}
+	memmove(ti, &info, sizeof(info));
+	return 0;
+}
+
 /*
 * LAB1: you may need to define sys_task_info here
 */
@@ -53,6 +102,9 @@ void syscall()
 	/*
 	* LAB1: you may need to update syscall counter for task info here
 	*/
+	if (id >= 0 && id < MAX_SYSCALL_NUM) {
+		curr_proc()->syscall_times[id]++;
+	}
 	switch (id) {
 	case SYS_write:
 		ret = sys_write(args[0], (char *)args[1], args[2]);
@@ -65,6 +117,12 @@ void syscall()
 		break;
 	case SYS_gettimeofday:
 		ret = sys_gettimeofday((TimeVal *)args[0], args[1]);
+		break;
+	case SYS_getpid:
+		ret = sys_getpid();
+		break;
+	case SYS_task_info:
+		ret = sys_task_info((TaskInfo *)args[0]);
 		break;
 	/*
 	* LAB1: you may need to add SYS_taskinfo case here
