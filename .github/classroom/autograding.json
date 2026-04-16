@@ -1,0 +1,14 @@
+{
+  "tests": [
+    {
+      "name": "run_os",
+      "setup": "",
+      "run": "make clean test BASE=0 INIT_PROC=ch5_usertest",
+      "input": "",
+      "output": "ch5 Usertests passed!",
+      "comparison": "included",
+      "timeout": 15,
+      "points": 100
+    }
+  ]
+}

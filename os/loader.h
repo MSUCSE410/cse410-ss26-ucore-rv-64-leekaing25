@@ -2,12 +2,14 @@
 #define LOADER_H
 
 #include "const.h"
-#include "file.h"
 #include "proc.h"
 #include "types.h"
 
+int finished();
+void loader_init();
 int load_init_app();
-int bin_loader(struct inode *, struct proc *);
+int loader(int, struct proc *);
+int get_id_by_name(char *);
 
 #define BASE_ADDRESS (0x1000)
 #define USTACK_SIZE (PAGE_SIZE)

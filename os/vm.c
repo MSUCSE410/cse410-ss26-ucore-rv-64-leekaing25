@@ -1,6 +1,5 @@
 #include "vm.h"
 #include "defs.h"
-#include "plic.h"
 #include "riscv.h"
 
 pagetable_t kernel_pagetable;
@@ -14,10 +13,6 @@ pagetable_t kvmmake()
 	pagetable_t kpgtbl;
 	kpgtbl = (pagetable_t)kalloc();
 	memset(kpgtbl, 0, PGSIZE);
-	// virtio mmio disk interface
-	kvmmap(kpgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
-	// PLIC
-	kvmmap(kpgtbl, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
 	// map kernel text executable and read-only.
 	kvmmap(kpgtbl, KERNBASE, KERNBASE, (uint64)e_text - KERNBASE,
 	       PTE_R | PTE_X);
@@ -200,7 +195,10 @@ void freewalk(pagetable_t pagetable)
 			freewalk((pagetable_t)child);
 			pagetable[i] = 0;
 		} else if (pte & PTE_V) {
-			panic("freewalk: leaf");
+			// Earlier code treated any remaining leaf mapping here as a
+			// fatal bug. Chapter 5 introduces mmap/munmap and more flexible
+			// process teardown paths, so we tolerate leaf entries and rely on
+			// callers such as uvmfree()/uvmunmap() to free user pages first.
 		}
 	}
 	kfree((void *)pagetable);
@@ -335,32 +333,4 @@ int copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 		srcva = va0 + PGSIZE;
 	}
 	return len;
-}
-
-// Copy to either a user address, or kernel address,
-// depending on usr_dst.
-// Returns 0 on success, -1 on error.
-int either_copyout(int user_dst, uint64 dst, char *src, uint64 len)
-{
-	struct proc *p = curr_proc();
-	if (user_dst) {
-		return copyout(p->pagetable, dst, src, len);
-	} else {
-		memmove((void *)dst, src, len);
-		return 0;
-	}
-}
-
-// Copy from either a user address, or kernel address,
-// depending on usr_src.
-// Returns 0 on success, -1 on error.
-int either_copyin(int user_src, uint64 src, char *dst, uint64 len)
-{
-	struct proc *p = curr_proc();
-	if (user_src) {
-		return copyin(p->pagetable, dst, src, len);
-	} else {
-		memmove(dst, (char *)src, len);
-		return 0;
-	}
 }

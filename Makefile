@@ -2,8 +2,6 @@
 all: build
 
 K = os
-U = user
-F = nfs
 
 TOOLPREFIX = riscv64-unknown-elf-
 CC = $(TOOLPREFIX)gcc
@@ -23,15 +21,11 @@ OBJS = $(C_OBJS) $(AS_OBJS)
 
 HEADER_DEP = $(addsuffix .d, $(basename $(C_OBJS)))
 
-ifeq (,$(findstring initproc.o,$(OBJS)))
-	AS_OBJS += $(BUILDDIR)/$K/initproc.o
+ifeq (,$(findstring link_app.o,$(OBJS)))
+	AS_OBJS += $(BUILDDIR)/$K/link_app.o
 endif
 
-INIT_PROC ?= usershell
-
-$(K)/initproc.o: $K/initproc.S
-$(K)/initproc.S: scripts/initproc.py .FORCE
-	@$(PY) scripts/initproc.py $(INIT_PROC)
+-include $(HEADER_DEP)
 
 CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb
 CFLAGS += -MD
@@ -39,6 +33,7 @@ CFLAGS += -mcmodel=medany
 CFLAGS += -ffreestanding -fno-common -nostdlib -mno-relax
 CFLAGS += -I$K
 CFLAGS += $(shell $(CC) -fno-stack-protector -E -x c /dev/null >/dev/null 2>&1 && echo -fno-stack-protector)
+
 
 LOG ?= error
 
@@ -83,17 +78,22 @@ $(HEADER_DEP): $(BUILDDIR)/$K/%.d : $K/%.c
 
 INIT_PROC ?= usershell
 
+os/link_app.o: $K/link_app.S
+os/link_app.S: scripts/pack.py .FORCE
+	@$(PY) scripts/pack.py $(INIT_PROC)
+os/kernel_app.ld: scripts/kernelld.py .FORCE
+	@$(PY) scripts/kernelld.py
+
 build: build/kernel
 
-build/kernel: $(OBJS) os/kernel.ld
-	$(LD) $(LDFLAGS) -T os/kernel.ld -o $(BUILDDIR)/kernel $(OBJS)
+build/kernel: $(OBJS) os/kernel_app.ld
+	$(LD) $(LDFLAGS) -T os/kernel_app.ld -o $(BUILDDIR)/kernel $(OBJS)
 	$(OBJDUMP) -S $(BUILDDIR)/kernel > $(BUILDDIR)/kernel.asm
 	$(OBJDUMP) -t $(BUILDDIR)/kernel | sed '1,/SYMBOL TABLE/d; s/ .* / /; /^$$/d' > $(BUILDDIR)/kernel.sym
 	@echo 'Build kernel done'
 
 clean:
-	rm -rf $(BUILDDIR) os/initproc.S
-	rm $(F)/*.img
+	rm -rf $(BUILDDIR) os/kernel_app.ld os/link_app.S
 
 # BOARD
 BOARD		?= qemu
@@ -106,16 +106,8 @@ QEMUOPTS = \
 	-machine virt \
 	-bios $(BOOTLOADER) \
 	-kernel build/kernel	\
-	-drive file=$(F)/fs-copy.img,if=none,format=raw,id=x0 \
-    -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 
-$(F)/fs.img:
-	make -C $(F)
-
-$(F)/fs-copy.img: $(F)/fs.img
-	@$(CP) $< $@
-
-run: build/kernel $(F)/fs-copy.img
+run: build/kernel
 	$(QEMU) $(QEMUOPTS)
 
 # QEMU's gdb stub command line changed in 0.11
@@ -123,7 +115,7 @@ QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
 	then echo "-gdb tcp::15234"; \
 	else echo "-s -p 15234"; fi)
 
-debug: build/kernel .gdbinit $(F)/fs-copy.img
+debug: build/kernel .gdbinit
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB) &
 	sleep 1
 	$(GDB)

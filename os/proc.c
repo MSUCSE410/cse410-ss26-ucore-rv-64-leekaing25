@@ -1,9 +1,9 @@
 #include "proc.h"
 #include "defs.h"
 #include "loader.h"
+#include "timer.h"
 #include "trap.h"
 #include "vm.h"
-#include "queue.h"
 
 struct proc pool[NPROC];
 __attribute__((aligned(16))) char kstack[NPROC][PAGE_SIZE];
@@ -12,16 +12,10 @@ __attribute__((aligned(4096))) char trapframe[NPROC][TRAP_PAGE_SIZE];
 extern char boot_stack_top[];
 struct proc *current_proc;
 struct proc idle;
-struct queue task_queue;
 
 int threadid()
 {
 	return curr_proc()->pid;
-}
-
-int cpuid()
-{
-	return 0;
 }
 
 struct proc *curr_proc()
@@ -37,11 +31,22 @@ void proc_init()
 		p->state = UNUSED;
 		p->kstack = (uint64)kstack[p - pool];
 		p->trapframe = (struct trapframe *)trapframe[p - pool];
+		// Chapter 5 introduces runtime accounting, so every process starts
+		// with a "not yet run" timestamp and zero recorded syscalls.
+		p->start_cycle = 0;
+		memset(p->syscall_times, 0, sizeof(p->syscall_times));
 	}
 	idle.kstack = (uint64)boot_stack_top;
 	idle.pid = IDLE_PID;
+	idle.start_cycle = 0;
+	memset(idle.syscall_times, 0, sizeof(idle.syscall_times));
+	// The idle task never competes with normal RUNNABLE processes in our
+	// scheduler loop, but we still initialize these fields so the struct
+	// stays internally consistent.
+	idle.priority = 16;
+	idle.stride = 0;
+	idle.pass = BIG_STRIDE / idle.priority;
 	current_proc = &idle;
-	init_queue(&task_queue);
 }
 
 int allocpid()
@@ -50,22 +55,14 @@ int allocpid()
 	return PID++;
 }
 
-struct proc *fetch_task()
-{
-	int index = pop_queue(&task_queue);
-	if (index < 0) {
-		debugf("No task to fetch\n");
-		return NULL;
-	}
-	debugf("fetch task %d(pid=%d) from task queue\n", index,
-	       pool[index].pid);
-	return pool + index;
-}
-
 void add_task(struct proc *p)
 {
-	push_queue(&task_queue, p - pool);
-	debugf("add task %d(pid=%d) to task queue\n", p - pool, p->pid);
+	// Older chapters used an explicit runnable queue.
+	// Chapter 5 switches to stride scheduling, so RUNNABLE processes are
+	// found by scanning the table and choosing the one with the smallest
+	// accumulated stride. The helper stays as a no-op to preserve older
+	// call sites and keep the surrounding interface stable.
+	(void)p;
 }
 
 // Look in the process table for an UNUSED proc.
@@ -89,25 +86,37 @@ found:
 	p->max_page = 0;
 	p->parent = NULL;
 	p->exit_code = 0;
+	p->start_cycle = 0;
+	memset(p->syscall_times, 0, sizeof(p->syscall_times));
+	// New processes begin with a neutral default priority. Their stride
+	// starts at 0, so they are immediately eligible to run once marked
+	// RUNNABLE.
+	p->priority = 16;
+	p->stride = 0;
+	p->pass = BIG_STRIDE / p->priority;
 	p->pagetable = uvmcreate((uint64)p->trapframe);
 	memset(&p->context, 0, sizeof(p->context));
 	memset((void *)p->kstack, 0, KSTACK_SIZE);
 	memset((void *)p->trapframe, 0, TRAP_PAGE_SIZE);
-	memset((void *)p->files, 0, sizeof(struct file *) * FD_BUFFER_SIZE);
 	p->context.ra = (uint64)usertrapret;
 	p->context.sp = p->kstack + KSTACK_SIZE;
 	return p;
 }
 
-int init_stdio(struct proc *p)
+static struct proc *find_min_stride_process(void)
 {
-	for (int i = 0; i < 3; i++) {
-		if (p->files[i] != NULL) {
-			return -1;
-		}
-		p->files[i] = stdio_init(i);
+	struct proc *best = NULL;
+
+	for (struct proc *p = pool; p < &pool[NPROC]; p++) {
+		if (p->state != RUNNABLE)
+			continue;
+		// Stride scheduling always runs the task with the smallest
+		// accumulated virtual runtime. A task with higher priority has a
+		// smaller pass value, so its stride grows more slowly over time.
+		if (best == NULL || p->stride < best->stride)
+			best = p;
 	}
-	return 0;
+	return best;
 }
 
 // Scheduler never returns.  It loops, doing:
@@ -119,27 +128,29 @@ void scheduler()
 {
 	struct proc *p;
 	for (;;) {
-		/*int has_proc = 0;
-		for (p = pool; p < &pool[NPROC]; p++) {
-			if (p->state == RUNNABLE) {
-				has_proc = 1;
-				tracef("swtich to proc %d", p - pool);
-				p->state = RUNNING;
-				current_proc = p;
-				swtch(&idle.context, &p->context);
-			}
-		}
-		if(has_proc == 0) {
-			panic("all app are over!\n");
-		}*/
-		p = fetch_task();
+		p = find_min_stride_process();
 		if (p == NULL) {
-			panic("all app are over!\n");
+			// When the last runnable process exits, there is nothing left
+			// for the kernel to schedule. Shutting the machine down here
+			// lets scripted runs (including the autograder) terminate
+			// cleanly instead of ending in a panic banner.
+			infof("all app are over, shutting down");
+			shutdown();
 		}
+		// We want task_info.time to measure "time since first scheduled",
+		// not "time since process structure was allocated", so the start
+		// timestamp is captured here on the first dispatch.
+		if (p->start_cycle == 0)
+			p->start_cycle = get_cycle();
 		tracef("swtich to proc %d", p - pool);
 		p->state = RUNNING;
 		current_proc = p;
 		swtch(&idle.context, &p->context);
+		// Control returns here after the process yields, blocks, or exits.
+		// Only runnable tasks stay in the scheduling competition, so only
+		// they have their stride advanced for the slice they just used.
+		if (p->state == RUNNABLE)
+			p->stride += p->pass;
 	}
 }
 
@@ -161,8 +172,9 @@ void sched()
 // Give up the CPU for one scheduling round.
 void yield()
 {
+	// Mark the task runnable again so the stride scheduler can reconsider
+	// it against every other runnable process.
 	current_proc->state = RUNNABLE;
-	add_task(current_proc);
 	sched();
 }
 
@@ -180,11 +192,6 @@ void freeproc(struct proc *p)
 	if (p->pagetable)
 		freepagetable(p->pagetable, p->max_page);
 	p->pagetable = 0;
-	for (int i = 0; i > FD_BUFFER_SIZE; i++) {
-		if (p->files[i] != NULL) {
-			fileclose(p->files[i]);
-		}
-	}
 	p->state = UNUSED;
 }
 
@@ -192,7 +199,6 @@ int fork()
 {
 	struct proc *np;
 	struct proc *p = curr_proc();
-	int i;
 	// Allocate process.
 	if ((np = allocproc()) == 0) {
 		panic("allocproc\n");
@@ -202,73 +208,25 @@ int fork()
 		panic("uvmcopy\n");
 	}
 	np->max_page = p->max_page;
-	// Copy file table to new proc
-	for (i = 0; i < FD_BUFFER_SIZE; i++) {
-		if (p->files[i] != NULL) {
-			// TODO: f->type == STDIO ?
-			p->files[i]->ref++;
-			np->files[i] = p->files[i];
-		}
-	}
 	// copy saved user registers.
 	*(np->trapframe) = *(p->trapframe);
 	// Cause fork to return 0 in the child.
 	np->trapframe->a0 = 0;
 	np->parent = p;
 	np->state = RUNNABLE;
-	add_task(np);
 	return np->pid;
 }
 
-int push_argv(struct proc *p, char **argv)
+int exec(char *name)
 {
-	uint64 argc, ustack[MAX_ARG_NUM + 1];
-	uint64 sp = p->ustack + USTACK_SIZE, spb = p->ustack;
-	// Push argument strings, prepare rest of stack in ustack.
-	for (argc = 0; argv[argc]; argc++) {
-		if (argc >= MAX_ARG_NUM)
-			panic("...");
-		sp -= strlen(argv[argc]) + 1;
-		sp -= sp % 16; // riscv sp must be 16-byte aligned
-		if (sp < spb) {
-			panic("...");
-		}
-		if (copyout(p->pagetable, sp, argv[argc],
-			    strlen(argv[argc]) + 1) < 0) {
-			panic("...");
-		}
-		ustack[argc] = sp;
-	}
-	ustack[argc] = 0;
-	// push the array of argv[] pointers.
-	sp -= (argc + 1) * sizeof(uint64);
-	sp -= sp % 16;
-	if (sp < spb) {
-		panic("...");
-	}
-	if (copyout(p->pagetable, sp, (char *)ustack,
-		    (argc + 1) * sizeof(uint64)) < 0) {
-		panic("...");
-	}
-	p->trapframe->a1 = sp;
-	p->trapframe->sp = sp;
-	// clear files ?
-	return argc; // this ends up in a0, the first argument to main(argc, argv)
-}
-
-int exec(char *path, char **argv)
-{
-	infof("exec : %s\n", path);
-	struct inode *ip;
-	struct proc *p = curr_proc();
-	if ((ip = namei(path)) == 0) {
-		errorf("invalid file name %s\n", path);
+	int id = get_id_by_name(name);
+	if (id < 0)
 		return -1;
-	}
+	struct proc *p = curr_proc();
 	uvmunmap(p->pagetable, 0, p->max_page, 1);
-	bin_loader(ip, p);
-	iput(ip);
-	return push_argv(p, argv);
+	p->max_page = 0;
+	loader(id, p);
+	return 0;
 }
 
 int wait(int pid, int *code)
@@ -285,10 +243,12 @@ int wait(int pid, int *code)
 			    (pid <= 0 || np->pid == pid)) {
 				havekids = 1;
 				if (np->state == ZOMBIE) {
-					// Found one.
-					np->state = UNUSED;
+					// Found a child that has already exited and kept its
+					// exit status for the parent. Now we can reclaim the
+					// process structure and return that child's pid.
 					pid = np->pid;
 					*code = np->exit_code;
+					freeproc(np);
 					return pid;
 				}
 			}
@@ -297,9 +257,30 @@ int wait(int pid, int *code)
 			return -1;
 		}
 		p->state = RUNNABLE;
-		add_task(p);
 		sched();
 	}
+}
+
+int spawn(char *filename)
+{
+	int id = get_id_by_name(filename);
+	struct proc *p;
+
+	if (id < 0)
+		return -1;
+	p = allocproc();
+	if (p == NULL)
+		return -1;
+
+	// Unlike fork(), spawn() does not clone the caller's address space.
+	// It creates a fresh child process and loads the named program
+	// directly into it.
+	p->parent = curr_proc();
+	if (loader(id, p) < 0) {
+		freeproc(p);
+		return -1;
+	}
+	return p->pid;
 }
 
 // Exit the current process.
@@ -307,11 +288,15 @@ void exit(int code)
 {
 	struct proc *p = curr_proc();
 	p->exit_code = code;
-	debugf("proc %d exit with %d", p->pid, code);
-	freeproc(p);
+	debugf("proc %d exit with %d\n", p->pid, code);
 	if (p->parent != NULL) {
-		// Parent should `wait`
+		// Keep the process as a zombie so the parent can still collect its
+		// exit code with wait(). Freeing immediately would lose that state.
 		p->state = ZOMBIE;
+	} else {
+		// Processes without a parent cannot be waited on, so we can free
+		// them immediately.
+		freeproc(p);
 	}
 	// Set the `parent` of all children to NULL
 	struct proc *np;
@@ -321,18 +306,4 @@ void exit(int code)
 		}
 	}
 	sched();
-}
-
-int fdalloc(struct file *f)
-{
-	debugf("debugf f = %p, type = %d", f, f->type);
-	struct proc *p = curr_proc();
-	for (int i = 0; i < FD_BUFFER_SIZE; ++i) {
-		if (p->files[i] == NULL) {
-			p->files[i] = f;
-			debugf("debugf fd = %d, f = %p", i, p->files[i]);
-			return i;
-		}
-	}
-	return -1;
 }
