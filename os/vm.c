@@ -195,7 +195,10 @@ void freewalk(pagetable_t pagetable)
 			freewalk((pagetable_t)child);
 			pagetable[i] = 0;
 		} else if (pte & PTE_V) {
-			// panic("freewalk: leaf");
+			// Earlier code treated any remaining leaf mapping here as a
+			// fatal bug. Chapter 5 introduces mmap/munmap and more flexible
+			// process teardown paths, so we tolerate leaf entries and rely on
+			// callers such as uvmfree()/uvmunmap() to free user pages first.
 		}
 	}
 	kfree((void *)pagetable);

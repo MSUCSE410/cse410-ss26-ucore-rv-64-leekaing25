@@ -56,6 +56,8 @@ uint64 sys_gettimeofday(uint64 val, int _tz)
 	struct proc *p = curr_proc();
 	uint64 cycle = get_cycle();
 	TimeVal t;
+	// The timer hardware exposes cycles, so convert to the user-visible
+	// seconds + microseconds layout expected by gettimeofday().
 	t.sec = cycle / CPU_FREQ;
 	t.usec = (cycle % CPU_FREQ) * 1000000 / CPU_FREQ;
 	if (copyout(p->pagetable, val, (char *)&t, sizeof(TimeVal)) < 0)
@@ -67,6 +69,9 @@ uint64 sys_mmap(uint64 start, uint64 len, int port, int flag, int fd)
 {
 	(void)flag;
 	(void)fd;
+	// This Chapter 5 mmap is the minimal anonymous mapping interface used
+	// by the tests: no file backing, just allocate pages and insert them
+	// into the caller's page table.
 	if (len == 0)
 		return 0;
 	if (!PGALIGNED(start))
@@ -89,11 +94,14 @@ uint64 sys_mmap(uint64 start, uint64 len, int port, int flag, int fd)
 		perm |= PTE_X;
 
 	struct proc *p = curr_proc();
+	// First pass: validate the whole range before changing anything. This
+	// prevents partially overlapping mappings from being accepted.
 	for (uint64 va = start; va < start + map_len; va += PGSIZE) {
 		pte_t *pte = walk(p->pagetable, va, 0);
 		if (pte != 0 && (*pte & PTE_V))
 			return -1;
 	}
+	// Second pass: allocate physical pages and map them one page at a time.
 	for (uint64 va = start; va < start + map_len; va += PGSIZE) {
 		char *pa = kalloc();
 		if (pa == 0)
@@ -116,6 +124,8 @@ uint64 sys_munmap(uint64 start, uint64 len)
 		return -1;
 
 	struct proc *p = curr_proc();
+	// As with mmap(), validate the entire range before mutating the page
+	// table so an invalid address does not produce a partial unmap.
 	for (uint64 va = start; va < start + unmap_len; va += PGSIZE) {
 		pte_t *pte = walk(p->pagetable, va, 0);
 		if (pte == 0 || (*pte & PTE_V) == 0)
@@ -127,6 +137,7 @@ uint64 sys_munmap(uint64 start, uint64 len)
 
 static inline uint64 cycles_to_ms(uint64 cycles)
 {
+	// task_info reports coarse-grained runtime in milliseconds.
 	return (cycles * 1000) / CPU_FREQ;
 }
 
@@ -141,6 +152,8 @@ uint64 sys_task_info(uint64 ti_va)
 		return -1;
 	struct proc *p = curr_proc();
 	TaskInfo info;
+	// Translate the kernel's internal process state into the smaller API
+	// contract used by the user-space tests.
 	switch (p->state) {
 	case UNUSED:
 		info.status = UnInit;
@@ -162,6 +175,8 @@ uint64 sys_task_info(uint64 ti_va)
 	}
 	memmove(info.syscall_times, p->syscall_times, sizeof(info.syscall_times));
 	if (p->start_cycle == 0) {
+		// The process has never been scheduled yet, so from the user's
+		// perspective it has consumed no runtime.
 		info.time = 0;
 	} else {
 		uint64 now = get_cycle();
@@ -207,16 +222,23 @@ uint64 sys_spawn(uint64 va)
 	struct proc *p = curr_proc();
 	char name[MAX_STR_LEN];
 
+	// Copy the user-provided program name into a kernel buffer before
+	// resolving it in the built-in app table.
 	if (copyinstr(p->pagetable, name, va, sizeof(name)) < 0)
 		return -1;
 	return spawn(name);
 }
 
 uint64 sys_set_priority(long long prio){
+	// The tests require priorities >= 2. Smaller values would either make
+	// BIG_STRIDE / priority invalid or give a process effectively infinite
+	// scheduling weight.
 	if (prio < 2)
 		return -1;
 	struct proc *p = curr_proc();
 	p->priority = prio;
+	// Recompute the stride increment immediately so future scheduling
+	// decisions use the new weight.
 	p->pass = BIG_STRIDE / p->priority;
 	return prio;
 }
@@ -232,6 +254,8 @@ void syscall()
 			   trapframe->a3, trapframe->a4, trapframe->a5 };
 	tracef("syscall %d args = [%x, %x, %x, %x, %x, %x]", id, args[0],
 	       args[1], args[2], args[3], args[4], args[5]);
+	// Chapter 5's task_info syscall reports how many times each syscall was
+	// invoked, so we count the dispatch here before entering the handler.
 	if (id >= 0 && id < MAX_SYSCALL_NUM)
 		curr_proc()->syscall_times[id]++;
 	switch (id) {

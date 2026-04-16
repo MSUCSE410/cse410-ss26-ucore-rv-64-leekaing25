@@ -7,6 +7,7 @@
 void kvm_init();
 void kvmmap(pagetable_t, uint64, uint64, uint64, int);
 int mappages(pagetable_t, uint64, uint64, uint64, int);
+// Exposed so sys_mmap/sys_munmap can inspect user mappings directly.
 pte_t *walk(pagetable_t, uint64, int);
 pagetable_t uvmcreate(uint64);
 int uvmcopy(pagetable_t, pagetable_t, uint64);
