@@ -4,8 +4,8 @@
       "name": "run_os",
       "setup": "",
       "run": "make clean test BASE=0",
-      "input": "",
-      "output": "",
+      "input": "ch5t_usertest\nch5_usertest\nquit\n",
+      "output": "ch5t usertest passed!\nch5 Usertests passed!",
       "comparison": "included",
       "timeout": 15,
       "points": 100
