@@ -114,6 +114,9 @@ struct inode *ialloc(uint dev, short type)
 		if (dip->type == 0) { // a free inode
 			memset(dip, 0, sizeof(*dip));
 			dip->type = type;
+			// A freshly allocated inode is created with one live directory
+			// entry, so its persistent link count starts at 1.
+			dip->nlink = 1;
 			bwrite(bp);
 			brelse(bp);
 			return iget(dev, inum);
@@ -135,8 +138,10 @@ void iupdate(struct inode *ip)
 	bp = bread(ip->dev, IBLOCK(ip->inum, sb));
 	dip = (struct dinode *)bp->data + ip->inum % IPB;
 	dip->type = ip->type;
+	// Persist the cached in-memory link count back to disk so hard-link
+	// updates survive reboot and are visible to future iget/ivalid calls.
+	dip->nlink = ip->nlink;
 	dip->size = ip->size;
-	// LAB4: you may need to update link count here
 	memmove(dip->addrs, ip->addrs, sizeof(ip->addrs));
 	bwrite(bp);
 	brelse(bp);
@@ -188,8 +193,10 @@ void ivalid(struct inode *ip)
 		bp = bread(ip->dev, IBLOCK(ip->inum, sb));
 		dip = (struct dinode *)bp->data + ip->inum % IPB;
 		ip->type = dip->type;
+		// Pull the on-disk hard-link count into the cached inode so link,
+		// unlink, and fstat all operate on the same value.
+		ip->nlink = dip->nlink;
 		ip->size = dip->size;
-		// LAB4: You may need to get lint count here
 		memmove(ip->addrs, dip->addrs, sizeof(ip->addrs));
 		brelse(bp);
 		ip->valid = 1;
@@ -207,9 +214,10 @@ void ivalid(struct inode *ip)
 // case it has to free the inode.
 void iput(struct inode *ip)
 {
-	// LAB4: Unmark the condition and change link count variable name (nlink) if needed
-	if (ip->ref == 1 && ip->valid && 0 /*&& ip->nlink == 0*/) {
-		// inode has no links and no other references: truncate and free.
+	if (ip->ref == 1 && ip->valid && ip->nlink == 0) {
+		// Reclaim the inode only when both counts are exhausted:
+		// ref == 1 means this iput is dropping the last in-memory holder,
+		// nlink == 0 means no directory entry names the file anymore.
 		itrunc(ip);
 		ip->type = 0;
 		iupdate(ip);
@@ -266,6 +274,7 @@ void itrunc(struct inode *ip)
 
 	for (i = 0; i < NDIRECT; i++) {
 		if (ip->addrs[i]) {
+			// Direct data blocks can be returned to the bitmap immediately.
 			bfree(ip->dev, ip->addrs[i]);
 			ip->addrs[i] = 0;
 		}
@@ -276,9 +285,11 @@ void itrunc(struct inode *ip)
 		a = (uint *)bp->data;
 		for (j = 0; j < NINDIRECT; j++) {
 			if (a[j])
+				// Free each data block referenced by the indirect block.
 				bfree(ip->dev, a[j]);
 		}
 		brelse(bp);
+		// Then free the indirect block itself.
 		bfree(ip->dev, ip->addrs[NDIRECT]);
 		ip->addrs[NDIRECT] = 0;
 	}
@@ -448,7 +459,12 @@ struct inode *namei(char *path)
 	//     skip = 1;
 	// }
 	struct inode *dp = root_dir();
+	struct inode *ip;
 	if (dp == 0)
 		panic("fs dumped.\n");
-	return dirlookup(dp, path + skip, 0);
+	ip = dirlookup(dp, path + skip, 0);
+	// dirlookup returns a referenced inode for the target, so we can release
+	// the root directory inode before returning.
+	iput(dp);
+	return ip;
 }

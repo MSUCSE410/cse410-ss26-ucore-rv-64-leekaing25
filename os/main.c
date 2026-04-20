@@ -1,8 +1,13 @@
 #include "console.h"
+#include "bio.h"
 #include "defs.h"
+#include "file.h"
+#include "fs.h"
 #include "loader.h"
+#include "plic.h"
 #include "timer.h"
 #include "trap.h"
+#include "virtio.h"
 
 void clean_bss()
 {
@@ -18,8 +23,12 @@ void main()
 	proc_init();
 	kinit();
 	kvm_init();
-	loader_init();
 	trap_init();
+	plicinit();
+	virtio_disk_init();
+	binit();
+	fsinit();
+	loader_init();
 	timer_init();
 	load_init_app();
 	infof("start scheduler!");

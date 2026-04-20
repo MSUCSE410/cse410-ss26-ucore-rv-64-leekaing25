@@ -5,6 +5,9 @@
 build
 target
 /user
+nfs/fs
+nfs/*.img
+initproc.S
 link_app.S
 kernel_app.ld
 *.o

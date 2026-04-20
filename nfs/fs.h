@@ -45,7 +45,10 @@ struct superblock {
 // On-disk inode structure
 struct dinode {
 	short type; // File type
-	short pad[3];
+	// Keep this field at the same offset as os/fs.h so mkfs and the kernel
+	// agree on the exact on-disk inode layout.
+	short nlink;
+	short pad[2];
 	uint size; // Size of file (bytes)
 	uint addrs[NDIRECT + 1]; // Data block addresses
 };

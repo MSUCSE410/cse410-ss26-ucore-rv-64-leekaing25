@@ -1,4 +1,4 @@
-.PHONY: clean build user run debug test .FORCE
+.PHONY: clean build user fsimg run debug test .FORCE
 all: build
 
 K = os
@@ -13,6 +13,8 @@ PY = python3
 GDB = $(TOOLPREFIX)gdb
 CP = cp
 BUILDDIR = build
+FSIMG = nfs/fs.img
+FSRUNIMG = nfs/fs-run.img
 C_SRCS = $(wildcard $K/*.c)
 AS_SRCS = $(wildcard $K/*.S)
 C_OBJS = $(addprefix $(BUILDDIR)/, $(addsuffix .o, $(basename $(C_SRCS))))
@@ -93,7 +95,8 @@ build/kernel: $(OBJS) os/kernel_app.ld
 	@echo 'Build kernel done'
 
 clean:
-	rm -rf $(BUILDDIR) os/kernel_app.ld os/link_app.S
+	rm -rf $(BUILDDIR) os/kernel_app.ld os/link_app.S $(FSRUNIMG)
+	$(MAKE) -C nfs clean
 
 # BOARD
 BOARD		?= qemu
@@ -105,9 +108,15 @@ QEMUOPTS = \
 	-nographic \
 	-machine virt \
 	-bios $(BOOTLOADER) \
-	-kernel build/kernel	\
+	-kernel build/kernel \
+	-drive file=$(FSRUNIMG),if=none,format=raw,id=x0 \
+	-device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 
-run: build/kernel
+fsimg: user
+	$(MAKE) -C nfs
+	$(CP) -f $(FSIMG) $(FSRUNIMG)
+
+run: build/kernel fsimg
 	$(QEMU) $(QEMUOPTS)
 
 # QEMU's gdb stub command line changed in 0.11
@@ -115,7 +124,7 @@ QEMUGDB = $(shell if $(QEMU) -help | grep -q '^-gdb'; \
 	then echo "-gdb tcp::15234"; \
 	else echo "-s -p 15234"; fi)
 
-debug: build/kernel .gdbinit
+debug: build/kernel fsimg .gdbinit
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB) &
 	sleep 1
 	$(GDB)
@@ -125,5 +134,4 @@ CHAPTER ?= $(shell git rev-parse --abbrev-ref HEAD | grep -oP 'ch\K[0-9]')
 user:
 	make -C user CHAPTER=$(CHAPTER) BASE=$(BASE)
 
-test: user run
-
+test: run

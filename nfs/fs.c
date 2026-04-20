@@ -203,8 +203,9 @@ uint ialloc(ushort type)
 
 	bzero(&din, sizeof(din));
 	din.type = xshort(type);
+	// New inodes start with exactly one directory entry referencing them.
+	din.nlink = xshort(1);
 	din.size = xint(0);
-	// LAB4: You may want to init link count here
 	winode(inum, &din);
 	return inum;
 }

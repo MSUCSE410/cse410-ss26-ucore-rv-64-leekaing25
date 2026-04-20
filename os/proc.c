@@ -1,5 +1,6 @@
 #include "proc.h"
 #include "defs.h"
+#include "file.h"
 #include "loader.h"
 #include "timer.h"
 #include "trap.h"
@@ -16,6 +17,11 @@ struct proc idle;
 int threadid()
 {
 	return curr_proc()->pid;
+}
+
+int cpuid()
+{
+	return 0;
 }
 
 struct proc *curr_proc()
@@ -98,6 +104,10 @@ found:
 	memset(&p->context, 0, sizeof(p->context));
 	memset((void *)p->kstack, 0, KSTACK_SIZE);
 	memset((void *)p->trapframe, 0, TRAP_PAGE_SIZE);
+	memset((void *)p->files, 0, sizeof(struct file *) * FD_BUFFER_SIZE);
+	for (int i = 0; i < 3; i++) {
+		p->files[i] = stdio_init(i);
+	}
 	p->context.ra = (uint64)usertrapret;
 	p->context.sp = p->kstack + KSTACK_SIZE;
 	return p;
@@ -192,6 +202,12 @@ void freeproc(struct proc *p)
 	if (p->pagetable)
 		freepagetable(p->pagetable, p->max_page);
 	p->pagetable = 0;
+	for (int i = 0; i < FD_BUFFER_SIZE; i++) {
+		if (p->files[i] != NULL) {
+			fileclose(p->files[i]);
+			p->files[i] = NULL;
+		}
+	}
 	p->state = UNUSED;
 }
 
@@ -208,6 +224,18 @@ int fork()
 		panic("uvmcopy\n");
 	}
 	np->max_page = p->max_page;
+	for (int i = 0; i < FD_BUFFER_SIZE; i++) {
+		if (np->files[i] != NULL) {
+			fileclose(np->files[i]);
+			np->files[i] = NULL;
+		}
+	}
+	for (int i = 0; i < FD_BUFFER_SIZE; i++) {
+		if (p->files[i] != NULL) {
+			p->files[i]->ref++;
+			np->files[i] = p->files[i];
+		}
+	}
 	// copy saved user registers.
 	*(np->trapframe) = *(p->trapframe);
 	// Cause fork to return 0 in the child.
@@ -306,4 +334,16 @@ void exit(int code)
 		}
 	}
 	sched();
+}
+
+int fdalloc(struct file *f)
+{
+	struct proc *p = curr_proc();
+	for (int i = 0; i < FD_BUFFER_SIZE; ++i) {
+		if (p->files[i] == NULL) {
+			p->files[i] = f;
+			return i;
+		}
+	}
+	return -1;
 }

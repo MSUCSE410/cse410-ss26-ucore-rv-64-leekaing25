@@ -59,7 +59,11 @@ struct file *filealloc()
 //Show names of all files in the root_dir.
 int show_all_files()
 {
-	return dirls(root_dir());
+	struct inode *dp = root_dir();
+	int count = dirls(dp);
+	// root_dir() returns a referenced inode, so balance it after listing.
+	iput(dp);
+	return count;
 }
 
 //Create a new empty file based on path and type and return its inode;
@@ -85,6 +89,9 @@ static struct inode *create(char *path, short type)
 	tracef("create dinode and inode type = %d\n", type);
 
 	ivalid(ip);
+	// ialloc initializes the on-disk dinode, and we mirror that value into the
+	// cached in-memory inode so later syscalls observe a consistent nlink.
+	ip->nlink = 1;
 	iupdate(ip);
 	if (dirlink(dp, path, ip->inum) < 0)
 		panic("create: dirlink");

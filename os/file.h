@@ -15,9 +15,11 @@ struct inode {
 	int ref; // Reference count
 	int valid; // inode has been read from disk?
 	short type; // copy of disk inode
+	// Cached copy of dinode.nlink. This lets link/unlink/fstat update and
+	// report the link count without re-reading the inode block every time.
+	short nlink;
 	uint size;
 	uint addrs[NDIRECT + 1];
-	// LAB4: You may need to add link count here
 };
 
 // Defines a file in memory that provides information about the current use of the file and the corresponding inode location
@@ -28,13 +30,6 @@ struct file {
 	char writable;
 	struct inode *ip; // FD_INODE
 	uint off;
-};
-
-//A few specific fd
-enum {
-	STDIN = 0,
-	STDOUT = 1,
-	STDERR = 2,
 };
 
 extern struct file filepool[FILEPOOLSIZE];

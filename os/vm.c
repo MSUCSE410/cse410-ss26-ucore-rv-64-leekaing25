@@ -1,5 +1,6 @@
 #include "vm.h"
 #include "defs.h"
+#include "plic.h"
 #include "riscv.h"
 
 pagetable_t kernel_pagetable;
@@ -13,6 +14,10 @@ pagetable_t kvmmake()
 	pagetable_t kpgtbl;
 	kpgtbl = (pagetable_t)kalloc();
 	memset(kpgtbl, 0, PGSIZE);
+	// Device MMIO regions must be reachable from the kernel page table so
+	// the interrupt controller and virtio disk driver can touch registers.
+	kvmmap(kpgtbl, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+	kvmmap(kpgtbl, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
 	// map kernel text executable and read-only.
 	kvmmap(kpgtbl, KERNBASE, KERNBASE, (uint64)e_text - KERNBASE,
 	       PTE_R | PTE_X);
@@ -333,4 +338,26 @@ int copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 		srcva = va0 + PGSIZE;
 	}
 	return len;
+}
+
+int either_copyout(int user_dst, uint64 dst, char *src, uint64 len)
+{
+	struct proc *p = curr_proc();
+	if (user_dst) {
+		return copyout(p->pagetable, dst, src, len);
+	} else {
+		memmove((void *)dst, src, len);
+		return 0;
+	}
+}
+
+int either_copyin(int user_src, uint64 src, char *dst, uint64 len)
+{
+	struct proc *p = curr_proc();
+	if (user_src) {
+		return copyin(p->pagetable, dst, src, len);
+	} else {
+		memmove(dst, (char *)src, len);
+		return 0;
+	}
 }
