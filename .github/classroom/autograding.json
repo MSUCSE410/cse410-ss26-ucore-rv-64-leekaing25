@@ -3,11 +3,11 @@
     {
       "name": "run_os",
       "setup": "",
-      "run": "make clean test BASE=0 INIT_PROC=ch5_usertest",
+      "run": "make clean test BASE=0 INIT_PROC=ch6_usertest",
       "input": "",
-      "output": "ch5 Usertests passed!",
+      "output": "ch6 Usertests passed!",
       "comparison": "included",
-      "timeout": 15,
+      "timeout": 120,
       "points": 100
     }
   ]
