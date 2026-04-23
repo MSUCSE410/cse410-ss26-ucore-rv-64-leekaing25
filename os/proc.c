@@ -96,7 +96,8 @@ int task_to_id(struct thread *t)
 struct thread *fetch_task()
 {
 	int index = pop_queue(&task_queue);
-	struct thread *t = id_to_task(index);
+	struct thread *t 
+	= id_to_task(index);
 	if (t == NULL) {
 		debugf("No task to fetch\n");
 		return t;
