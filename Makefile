@@ -26,12 +26,18 @@ HEADER_DEP = $(addsuffix .d, $(basename $(C_OBJS)))
 ifeq (,$(findstring initproc.o,$(OBJS)))
 	AS_OBJS += $(BUILDDIR)/$K/initproc.o
 endif
+ifeq (,$(findstring link_app.o,$(OBJS)))
+	AS_OBJS += $(BUILDDIR)/$K/link_app.o
+endif
 
 INIT_PROC ?= usershell
 
 $(K)/initproc.o: $K/initproc.S
 $(K)/initproc.S: scripts/initproc.py .FORCE
 	@$(PY) scripts/initproc.py $(INIT_PROC)
+$(K)/link_app.o: $K/link_app.S
+$(K)/link_app.S: scripts/link_app.py .FORCE
+	@$(PY) scripts/link_app.py
 
 CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb
 CFLAGS += -MD
@@ -92,7 +98,7 @@ build/kernel: $(OBJS) os/kernel.ld
 	@echo 'Build kernel done'
 
 clean:
-	rm -rf $(BUILDDIR) os/initproc.S
+	rm -rf $(BUILDDIR) os/initproc.S os/link_app.S
 	rm -f $(F)/*.img
 
 # BOARD
@@ -134,4 +140,3 @@ user:
 	make -C user CHAPTER=$(CHAPTER) BASE=$(BASE)
 
 test: user run
-
