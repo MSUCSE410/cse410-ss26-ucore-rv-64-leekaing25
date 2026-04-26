@@ -82,7 +82,9 @@ INIT_PROC ?= usershell
 
 os/link_app.o: $K/link_app.S
 os/link_app.S: scripts/pack.py user .FORCE
-	@$(PY) scripts/pack.py $(INIT_PROC)
+	@$(PY) scripts/pack.py
+os/initproc.S: scripts/initproc.py .FORCE
+	@$(PY) scripts/initproc.py $(INIT_PROC)
 os/kernel_app.ld: scripts/kernelld.py .FORCE
 	@$(PY) scripts/kernelld.py
 
