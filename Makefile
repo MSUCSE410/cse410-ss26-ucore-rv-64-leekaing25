@@ -26,6 +26,9 @@ HEADER_DEP = $(addsuffix .d, $(basename $(C_OBJS)))
 ifeq (,$(findstring link_app.o,$(OBJS)))
 	AS_OBJS += $(BUILDDIR)/$K/link_app.o
 endif
+ifeq (,$(findstring initproc.o,$(OBJS)))
+	AS_OBJS += $(BUILDDIR)/$K/initproc.o
+endif
 
 -include $(HEADER_DEP)
 
@@ -97,7 +100,7 @@ build/kernel: $(OBJS) os/kernel_app.ld
 	@echo 'Build kernel done'
 
 clean:
-	rm -rf $(BUILDDIR) os/kernel_app.ld os/link_app.S $(FSRUNIMG)
+	rm -rf $(BUILDDIR) os/kernel_app.ld os/link_app.S os/initproc.S $(FSRUNIMG)
 	$(MAKE) -C nfs clean
 
 # BOARD
